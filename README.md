@@ -1,25 +1,53 @@
-# FriendMeet MVP
+# MEnU Meet MVP
 
-React + Supabase + LiveKit SFU. Designed for small private browser meetings (max 5 participants).
+React + Supabase + LiveKit Cloud for private browser meetings.
 
-## Stack
-- React + Vite
-- Supabase Auth/Postgres/Realtime
-- LiveKit SFU for real-time audio/video/screen sharing
-- Supabase Edge Function for secure LiveKit access tokens
+## Structure
 
-## Setup
-1. Create a Supabase project.
-2. Run `supabase/schema.sql` in Supabase SQL Editor.
-3. Create a LiveKit Cloud project (or later self-host LiveKit).
-4. Deploy the `livekit-token` Edge Function and configure:
-   - `LIVEKIT_URL`
-   - `LIVEKIT_API_KEY`
-   - `LIVEKIT_API_SECRET`
-5. Put Supabase URL and anon key in `.env`.
-6. `npm install && npm run dev`
+- `src/App.jsx` — application state and page switching
+- `src/pages/AuthPage.jsx` — sign in / sign up
+- `src/pages/DashboardPage.jsx` — create and join meetings
+- `src/pages/MeetingPage.jsx` — LiveKit meeting UI
+- `src/components/` — reusable UI components
+- `src/lib/supabase.js` — Supabase client
+- `src/lib/livekit.js` — secure Edge Function invocation and token response handling
+- `supabase/functions/livekit-token/index.ts` — server-side LiveKit token generation
+- `supabase/schema.sql` — database schema and RLS policies
 
-## Important
-Set `profiles.is_allowed = true` from a trusted admin context for the users who may use the app. Never expose a Supabase service-role key in the browser.
+## Environment
 
-The browser connects to the LiveKit SFU. Supabase does not carry the media stream.
+Create `.env` in the project root:
+
+```env
+VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_PUBLISHABLE_OR_ANON_KEY
+```
+
+Never put `LIVEKIT_API_SECRET` in the Vite frontend environment.
+
+## Supabase Edge Function secrets
+
+Configure these secrets for `livekit-token`:
+
+- `LIVEKIT_URL`
+- `LIVEKIT_API_KEY`
+- `LIVEKIT_API_SECRET`
+
+Then deploy the function:
+
+```bash
+supabase functions deploy livekit-token
+```
+
+## Access control
+
+New profiles default to `is_allowed = false`. Enable a user from a trusted Supabase SQL Editor/admin context using `supabase/admin.sql`.
+
+## Run locally
+
+```bash
+npm install
+npm run dev
+```
+
+The current frontend calls the Supabase Edge Function to mint LiveKit access tokens. The LiveKit API secret stays server-side. LiveKit access tokens encode the participant identity, room, and permissions and are signed using the API secret. See the LiveKit server SDK documentation for the current token API. 

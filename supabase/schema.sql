@@ -86,7 +86,11 @@ alter table public.messages enable row level security;
 create policy profiles_select on public.profiles for select to authenticated
 using (id = auth.uid() or is_allowed = true);
 create policy profiles_update_self on public.profiles for update to authenticated
-using (id = auth.uid()) with check (id = auth.uid());
+using (id = auth.uid())
+with check (
+  id = auth.uid()
+  and is_allowed = (select p.is_allowed from public.profiles p where p.id = auth.uid())
+);
 
 -- Meetings: only allowed users can create/read rooms. Hosts can update their rooms.
 create policy meetings_select_allowed on public.meetings for select to authenticated
