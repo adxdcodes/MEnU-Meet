@@ -13,6 +13,36 @@ export default function AuthPage() {
 
   const isSignup = mode === 'signup';
 
+  async function loginWithUsername() {
+    const cleanUsername = username.trim();
+
+    if (!cleanUsername || !password) {
+      throw new Error('Enter your username and password.');
+    }
+
+    const { data: emailData, error: lookupError } = await supabase.rpc(
+      'get_email_for_username',
+      { p_username: cleanUsername },
+    );
+
+    if (lookupError) {
+      console.error('Username lookup failed:', lookupError);
+      throw new Error('Username login is not configured yet. Run the updated Supabase schema.');
+    }
+
+    const resolvedEmail = emailData?.trim();
+    if (!resolvedEmail) {
+      throw new Error('Invalid username or password.');
+    }
+
+    const { error: loginError } = await supabase.auth.signInWithPassword({
+      email: resolvedEmail,
+      password,
+    });
+
+    if (loginError) throw new Error('Invalid username or password.');
+  }
+
   async function submit(event) {
     event.preventDefault();
     setBusy(true);
@@ -21,10 +51,15 @@ export default function AuthPage() {
 
     try {
       if (isSignup) {
+        const cleanUsername = username.trim();
+        if (!/^[A-Za-z0-9_.-]{3,24}$/.test(cleanUsername)) {
+          throw new Error('Username must be 3–24 characters and use only letters, numbers, _, . or -.');
+        }
+
         const { data, error: signupError } = await supabase.auth.signUp({
           email: email.trim(),
           password,
-          options: { data: { username: username.trim() } },
+          options: { data: { username: cleanUsername } },
         });
 
         if (signupError) throw signupError;
@@ -32,15 +67,10 @@ export default function AuthPage() {
         if (data.session) {
           setMessage('Account created.');
         } else {
-          setMessage('Account created. Check your email if confirmation is enabled, then sign in.');
+          setMessage('Account created. Check your email if confirmation is enabled, then sign in with your username.');
         }
       } else {
-        const { error: loginError } = await supabase.auth.signInWithPassword({
-          email: email.trim(),
-          password,
-        });
-
-        if (loginError) throw loginError;
+        await loginWithUsername();
       }
     } catch (submitError) {
       setError(submitError.message || 'Authentication failed.');
@@ -54,32 +84,38 @@ export default function AuthPage() {
       <form className="auth-card" onSubmit={submit}>
         <div className="eyebrow">PRIVATE VIDEO MEETINGS</div>
         <h1>MEnU Meet</h1>
-        <p className="muted">Simple browser meetings for your private group.</p>
+        <p className="muted">
+          {isSignup
+            ? 'Create your MEnU Meet account.'
+            : 'Sign in with your MEnU Meet username.'}
+        </p>
+
+        <label>
+          Username
+          <input
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            placeholder="your_username"
+            autoComplete="username"
+            minLength={3}
+            maxLength={24}
+            required
+          />
+        </label>
 
         {isSignup && (
           <label>
-            Username
+            Email
             <input
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-              placeholder="Choose a username"
-              autoComplete="username"
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="you@example.com"
+              autoComplete="email"
               required
             />
           </label>
         )}
-
-        <label>
-          Email
-          <input
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="you@example.com"
-            autoComplete="email"
-            required
-          />
-        </label>
 
         <label>
           Password

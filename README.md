@@ -5,7 +5,7 @@ React + Supabase + LiveKit Cloud for private browser meetings.
 ## Structure
 
 - `src/App.jsx` — application state and page switching
-- `src/pages/AuthPage.jsx` — sign in / sign up
+- `src/pages/AuthPage.jsx` — username login / sign up
 - `src/pages/DashboardPage.jsx` — create and join meetings
 - `src/pages/MeetingPage.jsx` — LiveKit meeting UI
 - `src/components/` — reusable UI components
@@ -51,3 +51,22 @@ npm run dev
 ```
 
 The current frontend calls the Supabase Edge Function to mint LiveKit access tokens. The LiveKit API secret stays server-side. LiveKit access tokens encode the participant identity, room, and permissions and are signed using the API secret. See the LiveKit server SDK documentation for the current token API. 
+
+
+## Shareable meeting links
+
+Every room uses a Google-Meet-style URL:
+
+```text
+https://your-domain.com/meet/AB12CD34
+```
+
+The app reads the room code from the URL, so a logged-in allowed user can open a shared link directly. If your production host uses an SPA/static deployment, configure unknown paths such as `/meet/*` to serve `index.html`.
+
+## Username login
+
+Supabase Auth still verifies the account password. MEnU Meet resolves the supplied username to the account email through the `get_email_for_username` database function, then uses Supabase `signInWithPassword`. Run the updated `supabase/schema.sql` before using username login.
+
+## Camera/microphone troubleshooting
+
+The meeting now opens a LiveKit `PreJoin` screen before connecting. Allow camera and microphone access in the browser. If another Windows application is already using the camera, close it before joining. The meeting also surfaces LiveKit connection and media-device errors and provides a user-initiated audio-start button for browser autoplay restrictions.

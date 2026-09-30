@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { getMeetingUrl } from '../lib/routes';
 import AppHeader from '../components/AppHeader';
 import ErrorMessage from '../components/ErrorMessage';
 
@@ -7,19 +8,25 @@ function makeRoomCode() {
   return crypto.randomUUID().replaceAll('-', '').slice(0, 8).toUpperCase();
 }
 
-export default function DashboardPage({ user, profile, onEnterMeeting, onSignOut }) {
+export default function DashboardPage({ user, profile, routeError, onEnterMeeting, onSignOut }) {
   const [meetingName, setMeetingName] = useState('Friends Hangout');
   const [roomCode, setRoomCode] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState(routeError || '');
   const [busy, setBusy] = useState(false);
+  const [createdLink, setCreatedLink] = useState('');
 
-  const isAllowed = Boolean(profile?.isAllowed);
+  useEffect(() => {
+    if (routeError) setError(routeError);
+  }, [routeError]);
+
+  const isAllowed = Boolean(profile?.isAllowed ?? profile?.is_allowed);
 
   async function createMeeting() {
     if (!isAllowed) return;
 
     setBusy(true);
     setError('');
+    setCreatedLink('');
 
     try {
       const { data, error: insertError } = await supabase
@@ -37,6 +44,7 @@ export default function DashboardPage({ user, profile, onEnterMeeting, onSignOut
         .single();
 
       if (insertError) throw insertError;
+      setCreatedLink(getMeetingUrl(data.room_code));
       onEnterMeeting(data);
     } catch (createError) {
       setError(createError.message || 'Could not create the meeting.');
@@ -50,7 +58,7 @@ export default function DashboardPage({ user, profile, onEnterMeeting, onSignOut
 
     const code = roomCode.trim().toUpperCase();
     if (!code) {
-      setError('Enter a room code.');
+      setError('Enter a room code or use a shared MEnU Meet link.');
       return;
     }
 
@@ -75,6 +83,16 @@ export default function DashboardPage({ user, profile, onEnterMeeting, onSignOut
     }
   }
 
+  async function copyCreatedLink() {
+    if (!createdLink) return;
+    try {
+      await navigator.clipboard.writeText(createdLink);
+      setError('Meeting link copied.');
+    } catch {
+      setError(createdLink);
+    }
+  }
+
   return (
     <main className="dashboard-page">
       <AppHeader username={profile?.username} onSignOut={onSignOut} />
@@ -89,7 +107,7 @@ export default function DashboardPage({ user, profile, onEnterMeeting, onSignOut
         <div>
           <div className="eyebrow">MEnU MEET</div>
           <h1>Your meeting space</h1>
-          <p className="muted">Create a private room or join one with a room code.</p>
+          <p className="muted">Create a private room or share a Google-Meet-style room link.</p>
         </div>
       </section>
 
@@ -110,12 +128,20 @@ export default function DashboardPage({ user, profile, onEnterMeeting, onSignOut
           <button className="button" disabled={!isAllowed || busy} onClick={createMeeting}>
             {busy ? 'Working…' : 'Create meeting'}
           </button>
+          {createdLink && (
+            <div className="share-link-box">
+              <span>{createdLink}</span>
+              <button className="button button-secondary button-small" onClick={copyCreatedLink}>
+                Copy link
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="panel">
           <div className="panel-icon">↗</div>
           <h2>Join a meeting</h2>
-          <p className="muted">Enter the room code shared by the host.</p>
+          <p className="muted">Paste the room code from a shared MEnU Meet link.</p>
           <label>
             Room code
             <input

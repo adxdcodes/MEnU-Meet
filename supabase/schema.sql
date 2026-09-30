@@ -52,18 +52,31 @@ create table if not exists public.messages (
   created_at timestamptz not null default now()
 );
 
+-- Case-insensitive username uniqueness. Existing duplicate usernames must be
+-- cleaned up before this index is created if your database already contains them.
+create unique index if not exists profiles_username_lower_idx
+  on public.profiles (lower(username));
+
 create or replace function public.handle_new_user()
-returns trigger language plpgsql security definer set search_path = public as $$
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
 begin
   insert into public.profiles(id, username, full_name)
   values (
     new.id,
-    coalesce(nullif(new.raw_user_meta_data->>'username',''), 'user_' || substr(replace(new.id::text,'-',''),1,8)),
+    coalesce(
+      nullif(trim(new.raw_user_meta_data->>'username'), ''),
+      'user_' || substr(replace(new.id::text,'-',''),1,8)
+    ),
     nullif(new.raw_user_meta_data->>'full_name','')
   )
   on conflict (id) do nothing;
   return new;
-end; $$;
+end;
+$$;
 
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
@@ -71,10 +84,58 @@ after insert on auth.users
 for each row execute procedure public.handle_new_user();
 
 create or replace function public.set_updated_at()
-returns trigger language plpgsql as $$
-begin new.updated_at = now(); return new; end; $$;
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create or replace function public.prevent_client_access_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.role() = 'authenticated' and new.is_allowed is distinct from old.is_allowed then
+    raise exception 'Only an administrator can change is_allowed';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists prevent_client_access_change on public.profiles;
+create trigger prevent_client_access_change
+before update on public.profiles
+for each row execute procedure public.prevent_client_access_change();
+
 drop trigger if exists profiles_updated_at on public.profiles;
-create trigger profiles_updated_at before update on public.profiles for each row execute procedure public.set_updated_at();
+create trigger profiles_updated_at
+before update on public.profiles
+for each row execute procedure public.set_updated_at();
+
+-- Used by the username + password login screen. It intentionally returns an
+-- email only for an existing MEnU Meet account. Password verification
+-- remains inside Supabase Auth via signInWithPassword().
+create or replace function public.get_email_for_username(p_username text)
+returns text
+language sql
+security definer
+set search_path = public, auth
+as $$
+  select u.email
+  from auth.users u
+  join public.profiles p on p.id = u.id
+  where lower(p.username) = lower(trim(p_username))
+    and u.email is not null
+  limit 1;
+$$;
+
+revoke all on function public.get_email_for_username(text) from public;
+grant execute on function public.get_email_for_username(text) to anon, authenticated;
 
 alter table public.profiles enable row level security;
 alter table public.meetings enable row level security;
@@ -82,47 +143,152 @@ alter table public.meeting_participants enable row level security;
 alter table public.join_requests enable row level security;
 alter table public.messages enable row level security;
 
--- Profiles: users can see profiles of allowed app users, and edit only their own non-admin fields.
-create policy profiles_select on public.profiles for select to authenticated
+-- Re-runnable policies.
+drop policy if exists profiles_select on public.profiles;
+drop policy if exists profiles_update_self on public.profiles;
+drop policy if exists meetings_select_allowed on public.meetings;
+drop policy if exists meetings_insert_allowed on public.meetings;
+drop policy if exists meetings_update_host on public.meetings;
+drop policy if exists participants_select_allowed on public.meeting_participants;
+drop policy if exists participants_insert_self on public.meeting_participants;
+drop policy if exists participants_update_self_or_host on public.meeting_participants;
+drop policy if exists join_requests_select on public.join_requests;
+drop policy if exists join_requests_insert_allowed on public.join_requests;
+drop policy if exists join_requests_update_host on public.join_requests;
+drop policy if exists messages_select_member on public.messages;
+drop policy if exists messages_insert_member on public.messages;
+
+create policy profiles_select on public.profiles
+for select to authenticated
 using (id = auth.uid() or is_allowed = true);
-create policy profiles_update_self on public.profiles for update to authenticated
+
+create policy profiles_update_self on public.profiles
+for update to authenticated
 using (id = auth.uid())
-with check (
-  id = auth.uid()
-  and is_allowed = (select p.is_allowed from public.profiles p where p.id = auth.uid())
+with check (id = auth.uid());
+
+create policy meetings_select_allowed on public.meetings
+for select to authenticated
+using (
+  exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.is_allowed = true
+  )
 );
 
--- Meetings: only allowed users can create/read rooms. Hosts can update their rooms.
-create policy meetings_select_allowed on public.meetings for select to authenticated
-using (exists(select 1 from public.profiles p where p.id=auth.uid() and p.is_allowed=true));
-create policy meetings_insert_allowed on public.meetings for insert to authenticated
-with check (host_id=auth.uid() and exists(select 1 from public.profiles p where p.id=auth.uid() and p.is_allowed=true));
-create policy meetings_update_host on public.meetings for update to authenticated
-using (host_id=auth.uid()) with check (host_id=auth.uid());
+create policy meetings_insert_allowed on public.meetings
+for insert to authenticated
+with check (
+  host_id = auth.uid()
+  and exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.is_allowed = true
+  )
+);
 
-create policy participants_select_allowed on public.meeting_participants for select to authenticated
-using (exists(select 1 from public.profiles p where p.id=auth.uid() and p.is_allowed=true));
-create policy participants_insert_self on public.meeting_participants for insert to authenticated
-with check (user_id=auth.uid() and exists(select 1 from public.profiles p where p.id=auth.uid() and p.is_allowed=true));
-create policy participants_update_self_or_host on public.meeting_participants for update to authenticated
-using (user_id=auth.uid() or exists(select 1 from public.meetings m where m.id=meeting_id and m.host_id=auth.uid()));
+create policy meetings_update_host on public.meetings
+for update to authenticated
+using (host_id = auth.uid())
+with check (host_id = auth.uid());
 
-create policy join_requests_select on public.join_requests for select to authenticated
-using (user_id=auth.uid() or exists(select 1 from public.meetings m where m.id=meeting_id and m.host_id=auth.uid()));
-create policy join_requests_insert_allowed on public.join_requests for insert to authenticated
-with check (user_id=auth.uid() and exists(select 1 from public.profiles p where p.id=auth.uid() and p.is_allowed=true));
-create policy join_requests_update_host on public.join_requests for update to authenticated
-using (exists(select 1 from public.meetings m where m.id=meeting_id and m.host_id=auth.uid()));
+create policy participants_select_allowed on public.meeting_participants
+for select to authenticated
+using (
+  exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.is_allowed = true
+  )
+);
 
-create policy messages_select_member on public.messages for select to authenticated
-using (exists(select 1 from public.meeting_participants mp where mp.meeting_id=messages.meeting_id and mp.user_id=auth.uid()));
-create policy messages_insert_member on public.messages for insert to authenticated
-with check (sender_id=auth.uid() and exists(select 1 from public.meeting_participants mp where mp.meeting_id=messages.meeting_id and mp.user_id=auth.uid() and mp.left_at is null));
+create policy participants_insert_self on public.meeting_participants
+for insert to authenticated
+with check (
+  user_id = auth.uid()
+  and exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.is_allowed = true
+  )
+);
 
--- Realtime publication for chat/presence-related table changes.
-alter publication supabase_realtime add table public.messages;
-alter publication supabase_realtime add table public.join_requests;
-alter publication supabase_realtime add table public.meeting_participants;
+create policy participants_update_self_or_host on public.meeting_participants
+for update to authenticated
+using (
+  user_id = auth.uid()
+  or exists (
+    select 1 from public.meetings m
+    where m.id = meeting_id and m.host_id = auth.uid()
+  )
+);
 
--- Admin note: is_allowed should be changed from a trusted admin context/service role,
--- not by normal client-side users. Do not expose the service role key in React.
+create policy join_requests_select on public.join_requests
+for select to authenticated
+using (
+  user_id = auth.uid()
+  or exists (
+    select 1 from public.meetings m
+    where m.id = meeting_id and m.host_id = auth.uid()
+  )
+);
+
+create policy join_requests_insert_allowed on public.join_requests
+for insert to authenticated
+with check (
+  user_id = auth.uid()
+  and exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.is_allowed = true
+  )
+);
+
+create policy join_requests_update_host on public.join_requests
+for update to authenticated
+using (
+  exists (
+    select 1 from public.meetings m
+    where m.id = meeting_id and m.host_id = auth.uid()
+  )
+);
+
+create policy messages_select_member on public.messages
+for select to authenticated
+using (
+  exists (
+    select 1 from public.meeting_participants mp
+    where mp.meeting_id = messages.meeting_id
+      and mp.user_id = auth.uid()
+  )
+);
+
+create policy messages_insert_member on public.messages
+for insert to authenticated
+with check (
+  sender_id = auth.uid()
+  and exists (
+    select 1 from public.meeting_participants mp
+    where mp.meeting_id = messages.meeting_id
+      and mp.user_id = auth.uid()
+      and mp.left_at is null
+  )
+);
+
+-- Realtime for chat/presence-related table changes.
+do $$
+begin
+  alter publication supabase_realtime add table public.messages;
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.join_requests;
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.meeting_participants;
+exception when duplicate_object then null;
+end $$;
+
+-- is_allowed must be changed from a trusted admin context/service role.
+-- Never expose the service-role key in the React application.
