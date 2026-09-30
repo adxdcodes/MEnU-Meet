@@ -39,6 +39,7 @@ export default function DashboardPage({ user, profile, routeError, onEnterMeetin
           require_approval: true,
           allow_chat: true,
           allow_screen_share: true,
+          connection_mode: 'p2p',
         })
         .select('*')
         .single();

@@ -20,9 +20,21 @@ create table if not exists public.meetings (
   require_approval boolean not null default true,
   allow_chat boolean not null default true,
   allow_screen_share boolean not null default true,
+  connection_mode text not null default 'p2p',
   created_at timestamptz not null default now(),
   ended_at timestamptz
 );
+
+-- Safe migration for existing MEnU Meet projects.
+alter table public.meetings
+  add column if not exists connection_mode text not null default 'p2p';
+
+alter table public.meetings
+  drop constraint if exists meetings_connection_mode_check;
+
+alter table public.meetings
+  add constraint meetings_connection_mode_check
+  check (connection_mode in ('p2p','sfu'));
 
 create table if not exists public.meeting_participants (
   id uuid primary key default gen_random_uuid(),
@@ -272,6 +284,12 @@ with check (
 );
 
 -- Realtime for chat/presence-related table changes.
+do $$
+begin
+  alter publication supabase_realtime add table public.meetings;
+exception when duplicate_object then null;
+end $$;
+
 do $$
 begin
   alter publication supabase_realtime add table public.messages;

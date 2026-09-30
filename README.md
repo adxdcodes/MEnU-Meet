@@ -1,72 +1,43 @@
-# MEnU Meet MVP
+# MEnU Meet
 
-React + Supabase + LiveKit Cloud for private browser meetings.
+MEnU Meet is a browser-based private meeting app built with React, Supabase, and two selectable media transports:
 
-## Structure
+- **P2P WebRTC** — direct browser-to-browser media for two-person calls. Supabase Realtime is used only for signaling.
+- **LiveKit SFU** — LiveKit Cloud carries media through an SFU when the host switches the room to SFU mode.
 
-- `src/App.jsx` — application state and page switching
-- `src/pages/AuthPage.jsx` — username login / sign up
-- `src/pages/DashboardPage.jsx` — create and join meetings
-- `src/pages/MeetingPage.jsx` — LiveKit meeting UI
-- `src/components/` — reusable UI components
-- `src/lib/supabase.js` — Supabase client
-- `src/lib/livekit.js` — secure Edge Function invocation and token response handling
-- `supabase/functions/livekit-token/index.ts` — server-side LiveKit token generation
-- `supabase/schema.sql` — database schema and RLS policies
+## Connection mode
 
-## Environment
+Every meeting stores `connection_mode` as either `p2p` or `sfu`. New meetings default to P2P. The host can switch the active meeting between P2P WebRTC and LiveKit SFU from the meeting header. The selected mode is persisted in Supabase and broadcast to current participants.
 
-Create `.env` in the project root:
+## P2P networking
 
-```env
-VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
-VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_PUBLISHABLE_OR_ANON_KEY
-```
+P2P uses `RTCPeerConnection`, `getUserMedia()` for camera/microphone, and `getDisplayMedia()` for screen sharing. Supabase Realtime broadcasts SDP offers/answers and ICE candidates; it does not carry the media stream.
 
-Never put `LIVEKIT_API_SECRET` in the Vite frontend environment.
+For production reliability across restrictive NATs/firewalls, configure a TURN server through `VITE_WEBRTC_ICE_SERVERS`. STUN-only development can work for many networks but is not a guarantee of direct connectivity.
 
-## Supabase Edge Function secrets
+## LiveKit
 
-Configure these secrets for `livekit-token`:
+The LiveKit path uses the Supabase `livekit-token` Edge Function to mint short-lived participant tokens. Keep `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` server-side only.
 
-- `LIVEKIT_URL`
-- `LIVEKIT_API_KEY`
-- `LIVEKIT_API_SECRET`
-
-Then deploy the function:
-
-```bash
-supabase functions deploy livekit-token
-```
-
-## Access control
-
-New profiles default to `is_allowed = false`. Enable a user from a trusted Supabase SQL Editor/admin context using `supabase/admin.sql`.
-
-## Run locally
+## Run
 
 ```bash
 npm install
 npm run dev
 ```
 
-The current frontend calls the Supabase Edge Function to mint LiveKit access tokens. The LiveKit API secret stays server-side. LiveKit access tokens encode the participant identity, room, and permissions and are signed using the API secret. See the LiveKit server SDK documentation for the current token API. 
+Apply `supabase/schema.sql`, configure the Supabase Edge Function secrets, and deploy the function:
 
+```bash
+supabase functions deploy livekit-token
+```
 
 ## Shareable meeting links
 
-Every room uses a Google-Meet-style URL:
+Meetings use:
 
 ```text
-https://your-domain.com/meet/AB12CD34
+/meet/AB12CD34
 ```
 
-The app reads the room code from the URL, so a logged-in allowed user can open a shared link directly. If your production host uses an SPA/static deployment, configure unknown paths such as `/meet/*` to serve `index.html`.
-
-## Username login
-
-Supabase Auth still verifies the account password. MEnU Meet resolves the supplied username to the account email through the `get_email_for_username` database function, then uses Supabase `signInWithPassword`. Run the updated `supabase/schema.sql` before using username login.
-
-## Camera/microphone troubleshooting
-
-The meeting now opens a LiveKit `PreJoin` screen before connecting. Allow camera and microphone access in the browser. If another Windows application is already using the camera, close it before joining. The meeting also surfaces LiveKit connection and media-device errors and provides a user-initiated audio-start button for browser autoplay restrictions.
+The full link can be shared from the meeting header.
