@@ -45,6 +45,7 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
   const pendingRemoteTracksRef = useRef(new Map());
   const pendingCandidatesRef = useRef([]);
   const makingOfferRef = useRef(false);
+  const negotiationQueuedRef = useRef(false);
   const ignoreOfferRef = useRef(false);
   const politeRef = useRef(false);
   const startedOfferRef = useRef(false);
@@ -165,14 +166,33 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
     };
 
     pc.onnegotiationneeded = async () => {
+      // A screen share adds two new media sections (screen video + system
+      // audio) the first time it is enabled. Browsers can fire
+      // negotiationneeded more than once in the same task. Never create a
+      // second offer while the first one is still being created/sent.
+      if (makingOfferRef.current || pc.signalingState !== 'stable') {
+        negotiationQueuedRef.current = true;
+        return;
+      }
+
       try {
         makingOfferRef.current = true;
+        negotiationQueuedRef.current = false;
         await pc.setLocalDescription();
         await sendSignal({ type: 'description', description: pc.localDescription });
       } catch (error) {
-        if (pc.signalingState !== 'closed') onError?.(error.message || 'Could not negotiate the WebRTC connection.');
+        if (pc.signalingState !== 'closed') {
+          onError?.(error.message || 'Could not negotiate the WebRTC connection.');
+        }
       } finally {
         makingOfferRef.current = false;
+
+        // If another track change happened while the offer was in flight,
+        // let the browser fire another negotiation only after we are stable.
+        if (negotiationQueuedRef.current && pc.signalingState === 'stable') {
+          negotiationQueuedRef.current = false;
+          queueMicrotask(() => pc.dispatchEvent(new Event('negotiationneeded')));
+        }
       }
     };
 
@@ -217,8 +237,16 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
         await flushCandidates();
 
         if (isOffer) {
-          await pc.setLocalDescription();
-          await sendSignal({ type: 'description', description: pc.localDescription });
+          // Answer the offer without allowing another local negotiation to
+          // start concurrently. This is important when the sender list is
+          // changing because screen sharing was just started/stopped.
+          makingOfferRef.current = true;
+          try {
+            await pc.setLocalDescription();
+            await sendSignal({ type: 'description', description: pc.localDescription });
+          } finally {
+            makingOfferRef.current = false;
+          }
         }
         return;
       }
