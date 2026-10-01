@@ -33,11 +33,15 @@ function mediaError(error) {
 export default function P2PMeeting({ meeting, user, profile, onError, onConnected, onDisconnected }) {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const remoteScreenVideoRef = useRef(null);
   const peerRef = useRef(null);
   const channelRef = useRef(null);
   const localStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
+  const screenSenderRef = useRef(null);
   const remoteStreamRef = useRef(new MediaStream());
+  const remoteScreenStreamIdRef = useRef(null);
+  const pendingRemoteTracksRef = useRef(new Map());
   const pendingCandidatesRef = useRef([]);
   const makingOfferRef = useRef(false);
   const ignoreOfferRef = useRef(false);
@@ -52,6 +56,7 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
   const [sharing, setSharing] = useState(false);
   const [remoteConnected, setRemoteConnected] = useState(false);
   const [remotePeerCount, setRemotePeerCount] = useState(0);
+  const [remoteSharing, setRemoteSharing] = useState(false);
 
   const sendSignal = useCallback(async (payload) => {
     const message = { from: user.id, ...payload };
@@ -121,10 +126,20 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
 
     pc.ontrack = ({ track, streams }) => {
       const remote = streams?.[0] || remoteStreamRef.current;
-      if (!remoteStreamRef.current.getTracks().some((item) => item.id === track.id)) {
-        remoteStreamRef.current.addTrack(track);
+      const streamId = remote.id;
+
+      // Camera and screen are sent as two independent video tracks.
+      // Keep them in separate <video> elements so one does not replace the other.
+      if (streamId === remoteScreenStreamIdRef.current) {
+        if (remoteScreenVideoRef.current) remoteScreenVideoRef.current.srcObject = remote;
+      } else {
+        if (!remoteStreamRef.current.getTracks().some((item) => item.id === track.id)) {
+          remoteStreamRef.current.addTrack(track);
+        }
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remote;
       }
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remote;
+
+      pendingRemoteTracksRef.current.set(streamId, remote);
       setRemoteConnected(true);
       setStatus('Connected directly');
       onConnected?.();
@@ -170,6 +185,21 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
 
     try {
       if (payload.type === 'hello') return;
+
+      if (payload.type === 'screen-state') {
+        remoteScreenStreamIdRef.current = payload.active ? payload.streamId : null;
+        setRemoteSharing(Boolean(payload.active));
+
+        if (payload.active) {
+          const remoteScreen = pendingRemoteTracksRef.current.get(payload.streamId);
+          if (remoteScreen && remoteScreenVideoRef.current) {
+            remoteScreenVideoRef.current.srcObject = remoteScreen;
+          }
+        } else if (remoteScreenVideoRef.current) {
+          remoteScreenVideoRef.current.srcObject = null;
+        }
+        return;
+      }
 
       if (payload.type === 'description') {
         const description = payload.description;
@@ -291,6 +321,8 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
       channelRef.current?.untrack().catch(() => {});
       if (channelRef.current) supabase.removeChannel(channelRef.current);
       channelRef.current = null;
+      remoteScreenStreamIdRef.current = null;
+      pendingRemoteTracksRef.current.clear();
       peerRef.current?.close();
       peerRef.current = null;
       localStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -324,15 +356,22 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
   }
 
   async function toggleScreenShare() {
-    const videoSender = peerRef.current?.getSenders().find((item) => item.track?.kind === 'video');
-    if (!videoSender) return;
+    const pc = peerRef.current;
+    if (!pc) return;
 
     if (sharing) {
-      const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
-      if (cameraTrack) await videoSender.replaceTrack(cameraTrack);
+      const screenSender = screenSenderRef.current;
+      if (screenSender) await screenSender.replaceTrack(null);
+
+      await sendSignal({ type: 'screen-state', active: false });
       screenStreamRef.current?.getTracks().forEach((track) => track.stop());
       screenStreamRef.current = null;
       if (localVideoRef.current) localVideoRef.current.srcObject = localStreamRef.current;
+      if (screenSender) {
+        // Removing the track from an existing transceiver keeps the media
+        // section available for the next screen-share without replacing camera.
+        screenSenderRef.current = screenSender;
+      }
       setSharing(false);
       return;
     }
@@ -344,14 +383,29 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
       });
       const screenTrack = stream.getVideoTracks()[0];
       if (!screenTrack) return;
-      await videoSender.replaceTrack(screenTrack);
+
+      // Camera remains on its original sender. Screen gets its own sender,
+      // allowing both video tracks to be published simultaneously.
+      let screenSender = screenSenderRef.current;
+      if (screenSender) {
+        await screenSender.replaceTrack(screenTrack);
+      } else {
+        screenSender = pc.addTrack(screenTrack, stream);
+        screenSenderRef.current = screenSender;
+      }
+
       screenStreamRef.current = stream;
-      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      if (localVideoRef.current) localVideoRef.current.srcObject = localStreamRef.current;
       setSharing(true);
 
+      // Tell the peer which MediaStream is the screen stream before the
+      // renegotiation reaches it, so the remote UI can render camera + screen.
+      await sendSignal({ type: 'screen-state', active: true, streamId: stream.id });
+
       screenTrack.onended = async () => {
-        const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
-        if (cameraTrack) await videoSender.replaceTrack(cameraTrack);
+        const sender = screenSenderRef.current;
+        if (sender) await sender.replaceTrack(null);
+        await sendSignal({ type: 'screen-state', active: false });
         screenStreamRef.current?.getTracks().forEach((track) => track.stop());
         screenStreamRef.current = null;
         if (localVideoRef.current) localVideoRef.current.srcObject = localStreamRef.current;
@@ -382,6 +436,12 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
           {!remoteConnected && <div className="remote-placeholder"><div className="waiting-avatar">{remoteUserRef.current ? '?' : 'M'}</div><strong>Waiting for your guest</strong><span>Share the meeting link to invite them.</span></div>}
           {remoteConnected && <div className="video-overlay"><span>Guest</span><span>Connected</span></div>}
         </div>
+        {remoteSharing && (
+          <div className="p2p-video-card remote-screen">
+            <video ref={remoteScreenVideoRef} autoPlay playsInline />
+            <div className="video-overlay"><span>Guest screen</span><span>Sharing</span></div>
+          </div>
+        )}
       </div>
 
       <div className="p2p-controls-wrap">

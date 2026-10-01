@@ -403,3 +403,9 @@ input:focus { border-color: #6f7cff; box-shadow: 0 0 0 3px rgba(111,124,255,.12)
   .single-meeting-panel { padding: 24px 18px; margin-top: 4px; }
   .single-meeting-panel h2 { font-size: 24px; }
 }
+
+/* P2P: camera and screen are independent video tracks. */
+.p2p-video-card.remote-screen video {
+  object-fit: contain;
+  background: #05070a;
+}
