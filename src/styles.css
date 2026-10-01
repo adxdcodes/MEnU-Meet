@@ -372,3 +372,34 @@ input:focus { border-color: #6f7cff; box-shadow: 0 0 0 3px rgba(111,124,255,.12)
   .p2p-controls { display:grid; grid-template-columns:repeat(3,1fr); width:min(100%,420px); }
   .media-control { min-width:0; padding:10px 7px; }
 }
+
+.single-meeting-hero { max-width: 760px; }
+.single-meeting-panel {
+  width: min(680px, 100%);
+  padding: 34px;
+  text-align: center;
+  margin: 8px auto 0;
+}
+.single-meeting-panel .panel-icon { margin: 0 auto 18px; }
+.single-meeting-panel h2 { font-size: 28px; letter-spacing: -.025em; }
+.single-meeting-panel p { max-width: 520px; margin-left: auto; margin-right: auto; }
+.join-main-button { min-width: 190px; margin-top: 4px; }
+.meeting-features {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 20px;
+}
+.meeting-features span {
+  color: #9da6b6;
+  border: 1px solid #2b3240;
+  background: #0d1016;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+@media (max-width: 720px) {
+  .single-meeting-panel { padding: 24px 18px; margin-top: 4px; }
+  .single-meeting-panel h2 { font-size: 24px; }
+}

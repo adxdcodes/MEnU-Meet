@@ -310,3 +310,56 @@ end $$;
 
 -- is_allowed must be changed from a trusted admin context/service role.
 -- Never expose the service-role key in the React application.
+
+
+-- MEnU Meet uses one fixed private room. The first allowed user creates it;
+-- every later user receives the same room. This keeps the application single-room
+-- without exposing room creation or room-code selection in the client.
+create or replace function public.get_main_meeting()
+returns public.meetings
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  main_room public.meetings;
+  caller_allowed boolean;
+begin
+  select p.is_allowed into caller_allowed
+  from public.profiles p
+  where p.id = auth.uid();
+
+  if coalesce(caller_allowed, false) = false then
+    raise exception 'Your account is not allowed to join MEnU Meet';
+  end if;
+
+  select * into main_room
+  from public.meetings
+  where room_code = 'MENUMEET'
+  limit 1;
+
+  if main_room.id is null then
+    begin
+      insert into public.meetings (
+        room_code, name, host_id, max_participants,
+        require_approval, allow_chat, allow_screen_share, connection_mode
+      )
+      values (
+        'MENUMEET', 'MEnU Meet', auth.uid(), 2,
+        false, true, true, 'p2p'
+      )
+      returning * into main_room;
+    exception when unique_violation then
+      select * into main_room
+      from public.meetings
+      where room_code = 'MENUMEET'
+      limit 1;
+    end;
+  end if;
+
+  return main_room;
+end;
+$$;
+
+revoke all on function public.get_main_meeting() from public;
+grant execute on function public.get_main_meeting() to authenticated;

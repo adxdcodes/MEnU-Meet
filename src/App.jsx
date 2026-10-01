@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from './lib/supabase';
-import { getMeetingCodeFromPath, goToDashboard, goToMeeting } from './lib/routes';
+import { MAIN_ROOM_CODE, getMeetingCodeFromPath, goToDashboard, goToMeeting } from './lib/routes';
 import { normalizeProfile } from './lib/profile';
 import PageLoader from './components/PageLoader';
 import AuthPage from './pages/AuthPage';
@@ -91,38 +91,46 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
 
-    async function loadSharedMeeting() {
-      if (!session?.user?.id || !profile?.isAllowed || !routeRoomCode) return;
-      if (meeting?.room_code === routeRoomCode) return;
+    async function loadMainMeeting() {
+      if (!session?.user?.id || !profile?.isAllowed) return;
 
       setRouteError('');
-      const { data, error } = await supabase
-        .from('meetings')
-        .select('*')
-        .eq('room_code', routeRoomCode)
-        .maybeSingle();
-
+      const { data, error } = await supabase.rpc('get_main_meeting');
       if (!mounted) return;
 
       if (error) {
-        console.error('Shared meeting lookup failed:', error);
-        setRouteError(error.message || 'Could not open this meeting link.');
+        console.error('Main meeting lookup failed:', error);
+        setRouteError(error.message || 'Could not open MEnU Meet.');
         return;
       }
 
-      if (!data) {
-        setRouteError('This MEnU Meet room does not exist or is no longer available.');
+      const nextMeeting = Array.isArray(data) ? data[0] : data;
+      if (!nextMeeting) {
+        setRouteError('The MEnU Meet room is not available yet.');
         return;
       }
 
-      setMeeting(data);
+      if (routeRoomCode && routeRoomCode !== MAIN_ROOM_CODE) {
+        setRouteError('MEnU Meet uses one private meeting room.');
+      }
+
+      // A shared /meet/MENUMEET URL opens the same single room automatically.
+      if (routeRoomCode === MAIN_ROOM_CODE) setMeeting(nextMeeting);
     }
 
-    loadSharedMeeting();
+    loadMainMeeting();
     return () => {
       mounted = false;
     };
-  }, [session?.user?.id, profile?.isAllowed, routeRoomCode, meeting?.room_code]);
+  }, [session?.user?.id, profile?.isAllowed, routeRoomCode]);
+
+  async function joinMainMeeting() {
+    const { data, error } = await supabase.rpc('get_main_meeting');
+    if (error) throw error;
+    const nextMeeting = Array.isArray(data) ? data[0] : data;
+    if (!nextMeeting) throw new Error('The MEnU Meet room is not available yet.');
+    return nextMeeting;
+  }
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -158,10 +166,10 @@ export default function App() {
 
   return (
     <DashboardPage
-      user={session.user}
       profile={profile}
       routeError={routeError}
       onEnterMeeting={enterMeeting}
+      onJoin={joinMainMeeting}
       onSignOut={signOut}
     />
   );
