@@ -39,6 +39,7 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
   const localStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
   const screenSenderRef = useRef(null);
+  const screenAudioSenderRef = useRef(null);
   const remoteStreamRef = useRef(new MediaStream());
   const remoteScreenStreamIdRef = useRef(null);
   const pendingRemoteTracksRef = useRef(new Map());
@@ -361,7 +362,9 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
 
     if (sharing) {
       const screenSender = screenSenderRef.current;
+      const screenAudioSender = screenAudioSenderRef.current;
       if (screenSender) await screenSender.replaceTrack(null);
+      if (screenAudioSender) await screenAudioSender.replaceTrack(null);
 
       await sendSignal({ type: 'screen-state', active: false });
       screenStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -378,14 +381,23 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
 
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        video: {
+          frameRate: { ideal: 30, max: 30 },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
         audio: true,
+        systemAudio: 'include',
+        windowAudio: 'system',
+        surfaceSwitching: 'include',
       });
       const screenTrack = stream.getVideoTracks()[0];
+      const screenAudioTrack = stream.getAudioTracks()[0];
       if (!screenTrack) return;
 
-      // Camera remains on its original sender. Screen gets its own sender,
-      // allowing both video tracks to be published simultaneously.
+      // Camera + microphone remain on their original senders. Screen video
+      // and captured system audio each get their own sender, so all four
+      // media tracks can be transmitted at the same time.
       let screenSender = screenSenderRef.current;
       if (screenSender) {
         await screenSender.replaceTrack(screenTrack);
@@ -394,17 +406,40 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
         screenSenderRef.current = screenSender;
       }
 
+      if (screenAudioTrack) {
+        let screenAudioSender = screenAudioSenderRef.current;
+        if (screenAudioSender) {
+          await screenAudioSender.replaceTrack(screenAudioTrack);
+        } else {
+          screenAudioSender = pc.addTrack(screenAudioTrack, stream);
+          screenAudioSenderRef.current = screenAudioSender;
+        }
+      } else if (screenAudioSenderRef.current) {
+        await screenAudioSenderRef.current.replaceTrack(null);
+      }
+
       screenStreamRef.current = stream;
       if (localVideoRef.current) localVideoRef.current.srcObject = localStreamRef.current;
       setSharing(true);
 
-      // Tell the peer which MediaStream is the screen stream before the
-      // renegotiation reaches it, so the remote UI can render camera + screen.
-      await sendSignal({ type: 'screen-state', active: true, streamId: stream.id });
+      // Tell the peer which MediaStream contains the screen video + system
+      // audio. The peer uses the stream id to render both tracks together.
+      await sendSignal({
+        type: 'screen-state',
+        active: true,
+        streamId: stream.id,
+        hasAudio: Boolean(screenAudioTrack),
+      });
+
+      if (!screenAudioTrack) {
+        setStatus('Screen shared — no system audio was provided by the browser');
+      }
 
       screenTrack.onended = async () => {
         const sender = screenSenderRef.current;
+        const audioSender = screenAudioSenderRef.current;
         if (sender) await sender.replaceTrack(null);
+        if (audioSender) await audioSender.replaceTrack(null);
         await sendSignal({ type: 'screen-state', active: false });
         screenStreamRef.current?.getTracks().forEach((track) => track.stop());
         screenStreamRef.current = null;
@@ -439,7 +474,7 @@ export default function P2PMeeting({ meeting, user, profile, onError, onConnecte
         {remoteSharing && (
           <div className="p2p-video-card remote-screen">
             <video ref={remoteScreenVideoRef} autoPlay playsInline />
-            <div className="video-overlay"><span>Guest screen</span><span>Sharing</span></div>
+            <div className="video-overlay"><span>Guest screen</span><span>Sharing + audio</span></div>
           </div>
         )}
       </div>
